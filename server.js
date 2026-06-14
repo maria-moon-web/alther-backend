@@ -1,9 +1,8 @@
 const express = require("express");
 require("dotenv").config(); // 🔥 cargar variables primero
-
 const mongoose = require("mongoose");
 const cors = require("cors");
-const bcrypt = require("bcrypt");
+const bcrypt = require("bcryptjs");
 const multer = require("multer");
 const path = require("path");
 const { createServer } = require("http");
@@ -90,6 +89,22 @@ const MensajeSchema = new mongoose.Schema({
 });
 
 const Mensaje = mongoose.model("Mensaje", MensajeSchema);
+
+/* =========================
+   MODELO NOTIFICACIONES
+========================= */
+const NotificacionSchema = new mongoose.Schema({
+  usuario: String,
+  remitente: String,
+  nombreRemitente: String,
+  fotoPerfil: String,
+  mensaje: String,
+  tipo: { type: String, default: 'mensaje' }, // 'mensaje', 'seguidor', etc
+  leida: { type: Boolean, default: false },
+  fecha: { type: Date, default: Date.now }
+});
+
+const Notificacion = mongoose.model("Notificacion", NotificacionSchema);
 
 /* =========================
    REGISTRO
@@ -336,6 +351,72 @@ app.post("/mensajes", async (req, res) => {
 });
 
 /* =========================
+   RUTAS NOTIFICACIONES
+========================= */
+
+// Obtener notificaciones no leídas del usuario
+app.get("/notificaciones/:usuario", async (req, res) => {
+  try {
+    const notificaciones = await Notificacion.find({ 
+      usuario: req.params.usuario,
+      leida: false 
+    }).sort({ fecha: -1 });
+    res.json(notificaciones);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Obtener todas las notificaciones del usuario
+app.get("/notificaciones-todas/:usuario", async (req, res) => {
+  try {
+    const notificaciones = await Notificacion.find({ 
+      usuario: req.params.usuario 
+    }).sort({ fecha: -1 });
+    res.json(notificaciones);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Marcar notificación como leída
+app.put("/notificacion/:id", async (req, res) => {
+  try {
+    const notificacion = await Notificacion.findByIdAndUpdate(
+      req.params.id,
+      { leida: true },
+      { new: true }
+    );
+    res.json(notificacion);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Marcar todas las notificaciones como leídas
+app.put("/notificaciones-leer/:usuario", async (req, res) => {
+  try {
+    await Notificacion.updateMany(
+      { usuario: req.params.usuario },
+      { leida: true }
+    );
+    res.json({ success: true, message: "Notificaciones marcadas como leídas" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Eliminar notificación
+app.delete("/notificacion/:id", async (req, res) => {
+  try {
+    await Notificacion.findByIdAndDelete(req.params.id);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/* =========================
    SOCKET.IO
 ========================= */
 
@@ -356,8 +437,36 @@ io.on('connection', (socket) => {
     const nuevoMensaje = new Mensaje({ remitente, destinatario, mensaje });
     await nuevoMensaje.save();
 
+    // Obtener datos del remitente para la notificación
+    const usuarioRemitente = await Usuario.findById(remitente).select("nombreUsuario fotoPerfil");
+
+    // Crear notificación para el destinatario
+    const notificacion = new Notificacion({
+      usuario: destinatario,
+      remitente: remitente,
+      nombreRemitente: usuarioRemitente?.nombreUsuario || 'Desconocido',
+      fotoPerfil: usuarioRemitente?.fotoPerfil || null,
+      mensaje: mensaje,
+      tipo: 'mensaje'
+    });
+    await notificacion.save();
+
+    // Emitir mensaje a la sala
     const room = [remitente, destinatario].sort().join('_');
     io.to(room).emit('receive_message', nuevoMensaje);
+
+    // Emitir notificación al usuario destinatario
+    io.to(destinatario).emit('new_notification', {
+      _id: notificacion._id,
+      remitente: remitente,
+      nombreRemitente: usuarioRemitente?.nombreUsuario || 'Desconocido',
+      fotoPerfil: usuarioRemitente?.fotoPerfil || null,
+      mensaje: mensaje,
+      tipo: 'mensaje',
+      fecha: notificacion.fecha
+    });
+
+    console.log(`✉️ Notificación enviada a ${destinatario} desde ${remitente}`);
   });
 
   socket.on('disconnect', () => {
@@ -368,7 +477,7 @@ io.on('connection', (socket) => {
 /* =========================
    SERVIDOR
 ========================= */
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 1000;
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
